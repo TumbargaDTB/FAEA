@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FAEA Strategic Docket Workspace</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>body{margin:0}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ============================================================
+   FAEA STRATEGIC DOCKET WORKSPACE
+   Six-phase pipeline: Landscape Scan → Issue Intake →
+   Eligibility Screen → Capacity Check → Prioritization →
+   Docket & Next Steps
+   Data persists via browser localStorage (single batched key).
+   ============================================================ */
+
+const STORAGE_KEY = "faea-workspace-v1";
+
+const PALETTE = {
+  ink: "#1C2B26", // deep spruce ink
+  field: "#24473A", // field green
+  wheat: "#C9922E", // harvest gold
+  wheatSoft: "#F3E3C2",
+  paper: "#FAF9F4",
+  card: "#FFFFFF",
+  line: "#DDD8CC",
+  pass: "#2E6B4F",
+  fail: "#A33B2E",
+  unsure: "#8A6D2F",
+  mute: "#6B7770",
+};
+
+const SECTORS = [
+  "Animal health / veterinary",
+  "Dairy",
+  "Feed & feed ingredients",
+  "Grains & oilseeds",
+  "Meat & poultry",
+];
+
+const STANDARDS = ["Codex", "IPPC", "Other / multiple", "WOAH", "WTO SPS"];
+
+/* Survey-derived fields (populated from the member survey). Options alphabetical. */
+const MECHANISMS = [
+  "Bilateral technical engagement",
+  "Capacity-building with partner regulators",
+  "Codex / standards-body advocacy",
+  "Facility-listing or dossier support",
+  "Other / mixed",
+];
+
+const MEMBER_RANK = ["Mid-tier", "Top-tier", "Watch"];
+
+/* The cost of NOT acting — competitive displacement and contagion risk. Options alphabetical. */
+const INACTION_RISKS = [
+  "Contagion — the measure could spread to other markets",
+  "Current exports being displaced by a competitor",
+  "Potential / future market foreclosed",
+];
+
+/* What kind of barrier — a substantive standard problem, an administration/process
+   problem, or both. Options alphabetical. */
+const BARRIER_TYPES = [
+  "Both",
+  "Process / administration (aligned standard, deviant execution)",
+  "Substantive standard (the measure itself deviates)",
+];
+
+const GATES = [
+  {
+    key: "stdDeviation",
+    label: "International-standards hook",
+    q: "Does the barrier stem from a measure that deviates from a science-based international standard (Codex, WOAH, IPPC) — OR from the deviant administration of one: process, procedure, or enforcement that departs from international norms, including the WTO SPS obligations on transparency and undue delay (Annex C)?",
+  },
+  {
+    key: "crossSector",
+    label: "Cross-sector reach",
+    q: "Does it affect multiple sectors, or shape a regulatory framework that will apply across sectors?",
+  },
+  {
+    key: "leverage",
+    label: "FAEA's model adds value",
+    q: "Does FAEA's collaborative, USDA-leveraged approach — working with governments, experts, and local stakeholders — add value no single association can generate alone?",
+  },
+  {
+    key: "complement",
+    label: "Complements the field",
+    q: "Does FAEA action complement or enhance existing efforts — rather than duplicate work already owned by another coalition or program?",
+  },
+];
+
+/* Who already works this space — surfaced at the "Complements the field" gate so
+   the duplication check happens at the moment of judgment. The real duplication
+   risk is other FAS-funded groups (members' own programs AND non-member
+   associations); the government rows are FAEA's funding rails and machinery, not
+   competitors. */
+const FIELD_MAP = [
+  { group: "The real duplication risk — other FAS-funded groups", items: [
+    { who: "The affected member's own FAS programs", note: "members hold their own MAP/FMD/EMP/ATP/RAPP portfolios; if a member is already running FAS money at this barrier, FAEA piling on duplicates" },
+    { who: "Non-member associations with FAS funds", note: "other commodity/product groups outside FAEA cover many of the same products or issues — check the by-sector list below the tagged-members box" },
+    { who: "Cross-commodity coalitions", note: "Coalition to Promote U.S. Ag Exports · U.S. Ag Export Development Council · CropLife (MRLs/biotech)" },
+  ]},
+  { group: "FAEA's funding & the government machinery — not competitors", items: [
+    { who: "FAS MAP", note: "FAEA's own funding rail; FAEA has standing at FAS to work market-access/policy/regulatory issues under MAP scope" },
+    { who: "FAS Borlaug & Cochran Fellowships", note: "train foreign regulators on science-based frameworks — a tool FAEA can direct, not duplicate (~$3.7M/yr)" },
+    { who: "FAS attachés (170+ countries)", note: "resolve SPS/TBT problems on the ground — partners to work through, not competitors" },
+    { who: "U.S. Codex Office · APHIS · FSIS · FDA", note: "set U.S. standards positions; run regionalization and systems recognition" },
+    { who: "USTR", note: "NTE, enforcement, ARTs, WTO SPS, disputes — the enforcement lane FAEA sits upstream of" },
+  ]},
+  { group: "Competitors — and the cost of not acting", items: [
+    { who: "European Union", note: "exports its rulebook (Brussels effect) — MRL/EUDR rules get mirrored in third markets, so inaction lets the barrier spread to other markets" },
+    { who: "Australia (MLA)", note: "levy-funded, target-driven NTB program (cut NTB impact A$1B/yr by 2030); actively displaces U.S. share when access lapses" },
+    { who: "Brazil (ApexBrasil)", note: "coordinated gov-industry SPS diplomacy; rising volume competitor winning access across soy, corn, beef, poultry" },
+    { who: "Canada · New Zealand", note: "small, disciplined Codex/FTA advocacy that punches above its weight" },
+  ]},
+];
+
+/* Non-member associations that hold FAS market-development funds and overlap
+   FAEA's sectors — the outward-looking duplication check. Surfaced per issue
+   from its tagged sectors. Sourced from FAS FMD/MAP cooperator lists. */
+const NONMEMBER_BY_SECTOR = {
+  "Animal health / veterinary": ["Animal Health Institute", "U.S. Livestock Genetics Export"],
+  "Dairy": ["Consortium for Common Food Names", "International Dairy Foods Association", "National Milk Producers Federation"],
+  "Feed & feed ingredients": ["National Hay Association", "North American Renderers Association"],
+  "Grains & oilseeds": ["American Seed Trade Association", "National Sunflower Association", "North American Millers' Association", "U.S. Dry Bean Council", "U.S. Wheat Associates", "USA Dry Pea & Lentil Council", "USA Rice Federation"],
+  "Meat & poultry": ["American Sheep Industry Association", "North American Meat Institute", "U.S. Cattlemen's Association", "U.S. Livestock Genetics Export"],
+};
+
+/* Standards calendar — Codex sessions with FAEA-relevant agenda items, the U.S.
+   public-comment on-ramp, and the WTO notification feed. The upstream, get-ahead
+   -of-it lane: shape the standard before it becomes a barrier. */
+const STANDARDS_WATCH = [
+  { body: "CCPR57", title: "Pesticide Residues", date: "7–12 Sep 2026", place: "Beijing", status: "upcoming",
+    items: ["MRLs for pesticides in foods & feeds", "classification of food/feed", "unsupported compounds; national registrations"],
+    us: "U.S. position led by EPA; historically pushes science-based, JMPR-based MRLs.",
+    comment: "U.S. Codex Office public meeting ~10 Sep 2026",
+    threads: ["Pesticide MRLs — soy (USSEC), grains (USGBC)"] },
+  { body: "CCFICS28", title: "Import/Export Inspection & Certification Systems", date: "12–17 Oct 2026", place: "Perth", status: "upcoming",
+    items: ["Establishment-listing guidance (Norway-led IWG)", "equivalence of national food control systems (CXG 101 consolidation)", "electronic/paperless certification", "appeals mechanism for rejected imports", "food fraud & traceability"],
+    us: "U.S. has co-led the equivalence work; aligned with recognition of the U.S. control system.",
+    comment: "U.S. Codex Office public meeting ~10 Sep 2026",
+    threads: ["Facility registration & certification — the process-barrier cluster (NPPC, USMEF, USDEC, USAPEEC, AFIA)"] },
+  { body: "CAC49", title: "Codex Alimentarius Commission", date: "6–10 Jul 2026", place: "Geneva", status: "upcoming",
+    items: ["adopts committee outputs", "new-work proposals", "status of the dual-use CCPR/CCRVDF EWG"],
+    us: "Adoption stage for the year's committee work.",
+    comment: "—",
+    threads: ["All threads (adoption)"] },
+  { body: "Joint CCPR/CCRVDF EWG", title: "Dual-use compound MRL harmonization", date: "virtual 28–29 Apr 2026; joint session early 2027", place: "—", status: "upcoming",
+    items: ["harmonize MRLs for compounds used as both pesticide and veterinary drug", "harmonize animal/plant food descriptors"],
+    us: "United States chairs the working group (Brazil co-chairs).",
+    comment: "Feeds CAC49 (Jul 2026) and the 2027 joint session",
+    threads: ["MRL harmonization — cross-member (soy/grains + proteins + animal health)"] },
+  { body: "CCRVDF28", title: "Veterinary Drug Residues", date: "23–27 Mar 2026", place: "Minneapolis", status: "concluded",
+    items: ["MRL extrapolation to edible offal — pilot on tetracyclines, ceftiofur, ivermectin", "action levels for feed carryover (lasalocid, nicarbazin in eggs) → forwarded to CAC49", "JECFA priority list"],
+    us: "U.S. supports the science-based extrapolation and action-level approach — the direction that undercuts residue barriers like Korea's PLS.",
+    comment: "Public meeting was 5 Mar 2026 (concluded)",
+    threads: ["Vet-drug MRLs — Korea PLS candidate; proteins + Elanco/Merck"] },
+  { body: "CCFA56", title: "Food Additives", date: "13–17 Apr 2026", place: "Chongqing", status: "concluded",
+    items: ["MRL/additive provisions", "future-work planning"],
+    us: "U.S. delegate via FDA.",
+    comment: "Public meeting was 3 Mar 2026 (concluded)",
+    threads: ["Feed & food additives — AFIA"] },
+];
+
+/* The live early-warning feed — WTO SPS/TBT notifications via ePing. */
+const WTO_WATCH = {
+  feed: "ePing SPS&TBT Platform — epingalert.org (USDA FAS recommends stakeholders monitor it)",
+  note: "Members must notify new/revised SPS & TBT measures. Proposals to LOWER an MRL carry a 60-day comment window — the early-warning point before a measure becomes an in-force barrier. U.S. stakeholders (including trade associations) can comment via the USA SPS/TBT enquiry points; the U.S. has raised ~21% of all SPS specific trade concerns since 1995, mostly on MRLs and biotech.",
+  watch: [
+    "Proposed MRL reductions (pesticide & veterinary drug) — soy, grains, proteins, animal health",
+    "Facility-registration & establishment-listing measures — the process-barrier cluster",
+    "New certification / import-documentation requirements",
+    "Agricultural-biotech & GE approval regulations — soy, grains",
+  ],
+};
+
+/* FAEA membership — the coalition the docket must represent.
+   Interests reflect these groups' known trade-barrier priorities, consistent
+   with their USTR NTE filings (docket USTR-2025-0016). Edit freely. */
+const MEMBERS = [
+  { id: "afia", name: "American Feed Industry Association", short: "AFIA",
+    fas: "MAP cooperator (small allocation)",
+    sectors: ["Feed & feed ingredients"],
+    interests: "Reflected via its 2025–26 trade priorities. Regulatory approval of new feed ingredients, feed-additive and facility-registration / export-certificate regimes, APHIS export-protocol effectiveness, supply-chain access for essential imported inputs (vitamins, amino acids), and removal of non-tariff feed barriers." },
+  { id: "elanco", name: "Elanco", short: "Elanco",
+    fas: "For-profit company — not eligible for FAS cooperator programs",
+    sectors: ["Animal health / veterinary"],
+    interests: "Animal-health interests run through affiliated filings. Veterinary-drug registration delays and duplicative national dossiers, vet-drug MRLs (Codex CCRVDF/JECFA gaps, zero-tolerance defaults), EU restrictions on products from antimicrobial-treated animals (AMR rules), and non-deference to WOAH/Codex." },
+  { id: "merck", name: "Merck Animal Health", short: "Merck AH",
+    fas: "For-profit company — not eligible for FAS cooperator programs",
+    sectors: ["Animal health / veterinary"],
+    interests: "Animal-health interests run through affiliated filings. Vaccine/biologic and vet-drug registration timelines, MRL harmonization, dossier data protection/IP, and EU veterinary-medicinal-product and beta-agonist (ractopamine) restrictions." },
+  { id: "nasda", name: "National Association of State Departments of Agriculture", short: "NASDA",
+    fas: "State-government association — participates via State Regional Trade Groups, not a commodity cooperator",
+    sectors: ["Grains & oilseeds", "Feed & feed ingredients", "Meat & poultry", "Dairy"],
+    interests: "Cross-sector; reflected via its standing positions. Phytosanitary certification, IPPC plant-health alignment, SPS transparency, and state-level export facilitation." },
+  { id: "nppc", name: "National Pork Producers Council", short: "NPPC",
+    fas: "Policy/advocacy arm — not the promotion cooperator; pork export promotion runs National Pork Board → USMEF",
+    sectors: ["Meat & poultry"],
+    interests: "Filed individually (Oct. 30, 2025). Burdensome facility registration / plant listing, non-science-based SPS bans (e.g., Australia PRRS), ASF regionalization (WOAH), ractopamine & vet-drug MRLs, China Phase One SPS/tariff non-compliance, and TRQ access (Panama and others)." },
+  { id: "usapeec", name: "USA Poultry & Egg Export Council", short: "USAPEEC",
+    fas: "MAP/FMD cooperator (poultry & eggs)",
+    sectors: ["Meat & poultry"],
+    interests: "Filed individually. HPAI regionalization/zoning recognition (WOAH-consistent, defined ~10 km limits vs. state- or national-level bans by China, Kazakhstan, Taiwan), inclusion of all FSIS-listed plants in importer directories, excessive APHIS re-opening documentation, and tariffs (South Africa, Vietnam)." },
+  { id: "usdec", name: "U.S. Dairy Export Council", short: "USDEC",
+    fas: "MAP/FMD cooperator (dairy)",
+    sectors: ["Dairy"],
+    interests: "Filed jointly with NMPF and the Consortium for Common Food Names. EU geographical-indication / common-name confiscation (parmesan, feta), Canada's USMCA dairy non-compliance, dairy facility-registration and certification barriers across ~34 markets, and EU certification requirements." },
+  { id: "usgbc", name: "U.S. Grains & Bioproducts Council", short: "USGBC",
+    fas: "MAP/FMD cooperator (as the former U.S. Grains Council)",
+    sectors: ["Grains & oilseeds", "Feed & feed ingredients"],
+    interests: "Formerly the U.S. Grains Council; routes input through joint grains filings. Ethanol market access (blending/import barriers across 75+ markets), DDGS access for major buyers, biotech trait approvals, mycotoxin/aflatoxin limits vs. Codex, and sorghum/barley market development." },
+  { id: "usmec", name: "U.S. Meat Export Federation", short: "USMEF",
+    fas: "MAP/FMD cooperator (executes beef & pork checkoff promotion)",
+    sectors: ["Meat & poultry"],
+    interests: "Market development rather than an NTE filer; interests parallel the Meat Institute's filing. BSE restrictions, hormone & beta-agonist (ractopamine) MRLs (EU, Thailand), disease regionalization, plant approval/listing, common meat-name protection, and tariff & TRQ access (China Phase One)." },
+  { id: "ussec", name: "U.S. Soybean Export Council", short: "USSEC",
+    fas: "MAP/FMD cooperator (soy — via ASA/USSEC and the soy checkoff)",
+    sectors: ["Grains & oilseeds", "Feed & feed ingredients"],
+    interests: "Filed jointly with the American Soybean Association. Delayed biotech/GE trait approvals (EFSA data-requirement backlogs, EU new-genomic-technique uncertainty), misaligned soy MRLs, prior-notice and phytosanitary regimes, halal certification requirements, EU deforestation (EUDR) rules, and China tariff exposure." },
+];
+
+/* Threads where several members converge at once — the strongest tests
+   of the "representative of the whole membership" mandate. */
+const SHARED_THREADS = [
+  "MRL non-deference to Codex — soy, grains, and every animal-health & protein member",
+  "Facility registration & plant listing — feed, pork, poultry, dairy, meat",
+  "Disease regionalization / zoning (WOAH) — ASF (pork), HPAI (poultry), BSE (beef)",
+  "Biotech approval asynchronicity — soy, grains",
+  "SPS transparency / undue delay (WTO SPS Annex C) — effectively all members",
+];
+
+const memberById = (id) => MEMBERS.find((m) => m.id === id);
+
+const SCORE_AXES = [
+  { key: "impact", label: "Outcome potential", hint: "Safety improvement and market access unlocked if successful" },
+  { key: "feasibility", label: "Feasibility", hint: "Realistic path given regulatory process, relationships, and funding" },
+  { key: "complementarity", label: "Complementarity", hint: "Enhances existing efforts; fills a true gap in the field" },
+];
+
+const emptyState = {
+  issues: [],
+  feed: [],
+};
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+/* ---------- persistence ---------- */
+function useWorkspace() {
+  const [data, setData] = useState(emptyState);
+  const [loaded, setLoaded] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) setData({ ...emptyState, ...JSON.parse(raw) });
+    } catch (e) {
+      /* no saved data yet */
+    }
+    setLoaded(true);
+  }, []);
+
+  const update = useCallback((fn) => {
+    setData((prev) => {
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          setSavedAt(new Date());
+        } catch (e) {
+          console.error("Save failed", e);
+        }
+      }, 700);
+      return next;
+    });
+  }, []);
+
+  return { data, update, loaded, savedAt };
+}
+
+/* ---------- derived helpers ---------- */
+const gateAnswered = (issue) => GATES.every((g) => issue.screen && issue.screen[g.key]);
+const isEligible = (issue) => GATES.every((g) => issue.screen && issue.screen[g.key] === "yes");
+
+/* Member breadth is derived from the FAEA members an issue touches (tagged in
+   Intake), operationalizing the rule that FAEA work must represent the
+   broader membership rather than any single member's issue. */
+const issueMembers = (issue) => (issue.members || []).map(memberById).filter(Boolean);
+const memberSectors = (issue) => {
+  const set = new Set();
+  issueMembers(issue).forEach((m) => m.sectors.forEach((s) => set.add(s)));
+  return [...set];
+};
+const memberBreadthScore = (issue) => {
+  const n = (issue.members || []).length;
+  if (n === 0) return 0;
+  if (n === 1) return 1;
+  if (n === 2) return 2;
+  if (n === 3) return 3;
+  if (n <= 5) return 4;
+  return 5;
+};
+
+const isScored = (issue) =>
+  SCORE_AXES.every((a) => issue.scores && issue.scores[a.key]) && (issue.members || []).length > 0;
+const totalScore = (issue) =>
+  SCORE_AXES.reduce((s, a) => s + (issue.scores && issue.scores[a.key] ? issue.scores[a.key] : 0), 0) +
+  memberBreadthScore(issue);
+
+function phaseProgress(data) {
+  const { issues } = data;
+  const screenDone = issues.length
+    ? issues.filter(gateAnswered).length / issues.length
+    : 0;
+  const eligible = issues.filter(isEligible);
+  const scoredDone = eligible.length
+    ? eligible.filter(isScored).length / eligible.length
+    : 0;
+  return [
+    {
+      id: "intake",
+      name: "Issue Intake",
+      sub: "Candidate barriers, logged with standard and sectors",
+      pct: issues.length > 0 ? 1 : 0,
+      stat: `${issues.length} candidate${issues.length === 1 ? "" : "s"}`,
+    },
+    {
+      id: "screen",
+      name: "Eligibility Screen",
+      sub: "Every candidate clears four gates or exits",
+      pct: screenDone,
+      stat: `${eligible.length} clear of ${issues.length}`,
+    },
+    {
+      id: "priority",
+      name: "Prioritization",
+      sub: "Score eligible issues on outcome, feasibility, breadth",
+      pct: scoredDone,
+      stat: `${eligible.filter(isScored).length} of ${eligible.length} scored`,
+    },
+  ];
+}
+
+/* ---------- small UI atoms ---------- */
+const Field = ({ label, help, children }) => (
+  <label className="fld">
+    <span className="fld-l">{label}</span>
+    {help && <span className="fld-help">{help}</span>}
+    {children}
+  </label>
+);
+
+const Stamp = ({ value, onClick, compact }) => {
+  const map = {
+    yes: { text: "CLEARS", color: PALETTE.pass },
+    no: { text: "FAILS", color: PALETTE.fail },
+    unsure: { text: "UNSURE", color: PALETTE.unsure },
+  };
+  const m = map[value];
+  if (!m) return null;
+  return (
+    <span
+      className="stamp"
+      onClick={onClick}
+      style={{
+        color: m.color,
+        borderColor: m.color,
+        fontSize: compact ? 10 : 11,
+      }}
+    >
+      {m.text}
+    </span>
+  );
+};
+
+const Bar = ({ pct, height = 6 }) => (
+  <div className="bar" style={{ height }}>
+    <div
+      className="bar-fill"
+      style={{ width: `${Math.round(pct * 100)}%` }}
+    />
+  </div>
+);
+
+/* ---------- exports ---------- */
+function download(filename, text, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* Wrap the memo markdown in a clean, self-contained HTML document so it opens
+   with a double-click in any browser, prints to PDF, and pastes into Word. */
+function memoToHtml(md, title) {
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (t) =>
+    esc(t)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/_(.+?)_/g, "<em>$1</em>");
+  const out = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+  md.split("\n").forEach((raw) => {
+    const line = raw.trimEnd();
+    if (!line.trim()) { closeList(); return; }
+    if (line.startsWith("### ")) { closeList(); out.push(`<h3>${inline(line.slice(4))}</h3>`); return; }
+    if (line.startsWith("## ")) { closeList(); out.push(`<h2>${inline(line.slice(3))}</h2>`); return; }
+    if (line.startsWith("# ")) { closeList(); out.push(`<h1>${inline(line.slice(2))}</h1>`); return; }
+    if (/^\d+\.\s/.test(line)) { closeList(); out.push(`<p class="num">${inline(line)}</p>`); return; }
+    if (line.startsWith("- ")) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${inline(line.slice(2))}</li>`);
+      return;
+    }
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  });
+  closeList();
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<style>
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a; line-height: 1.55;
+         max-width: 7.2in; margin: 0 auto; padding: 48px 32px; background: #fff; }
+  h1 { font-size: 25px; margin: 0 0 4px; letter-spacing: -.01em; }
+  h2 { font-size: 16px; text-transform: uppercase; letter-spacing: .08em; color: #6b5a2e;
+       border-bottom: 1px solid #d8d2c4; padding-bottom: 5px; margin: 30px 0 12px; }
+  h3 { font-size: 17px; margin: 22px 0 6px; }
+  p { margin: 7px 0; }
+  p.num { margin: 5px 0 5px 18px; }
+  ul { margin: 7px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  strong { color: #000; }
+  em { color: #55524a; }
+  @media print { body { padding: 0; max-width: none; } h2 { break-after: avoid; } h3 { break-after: avoid; } }
+</style></head><body>
+${out.join("\n")}
+</body></html>`;
+}
+
+/* Board/member-facing narrative. Same data as the working memo, but written as
+   prose: framing first, scores de-emphasized, declines shown as evidence the
+   filter has teeth, and a clear ask at the end. */
+const andList = (arr) => {
+  if (!arr.length) return "";
+  if (arr.length === 1) return arr[0];
+  if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+  return `${arr.slice(0, -1).join(", ")}, and ${arr[arr.length - 1]}`;
+};
+
+function buildBoardNarrative(data) {
+  const eligible = data.issues.filter(isEligible).sort((a, b) => totalScore(b) - totalScore(a));
+  const declined = data.issues.filter((i) => gateAnswered(i) && !isEligible(i));
+  const L = [];
+
+  L.push("# FAEA Strategic Docket");
+  L.push("_A staff recommendation for the coming year — prepared for the board and membership._");
+  L.push("");
+
+  L.push("## Purpose");
+  const nWord = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+  const cnt = eligible.length <= 10 ? nWord[eligible.length] : String(eligible.length);
+  L.push(
+    `This document sets out the ${cnt} regulatory ${eligible.length === 1 ? "priority" : "priorities"} ` +
+    `FAEA staff recommend the alliance take on in the coming year, the reasoning behind ` +
+    `${eligible.length === 1 ? "it" : "each"}, and the issues we examined and deliberately set aside. ` +
+    `It is offered for the board's reaction and refinement rather than as a menu to choose from: staff have done ` +
+    `the screening work so that the board's time goes to judgment, not generation.`
+  );
+  L.push("");
+
+  L.push("## How these priorities were chosen");
+  L.push(
+    "FAEA takes on programmatic work that is representative of the broader membership. We do not take on " +
+    "individual member issues unless there is a larger goal relevant to all members. Every candidate was tested " +
+    "against four questions, and an issue had to clear all four to be recommended:"
+  );
+  GATES.forEach((g, n) => L.push(`${n + 1}. **${g.label}** — ${g.q}`));
+  L.push("");
+  L.push(
+    "The filter is deliberately strict. It is what allows FAEA to say yes with conviction, and — just as " +
+    "importantly — to decline work that belongs elsewhere without appearing arbitrary."
+  );
+  L.push("");
+
+  L.push("## The proposed docket");
+  if (!eligible.length) {
+    L.push("_No priorities have cleared the filter yet._");
+  } else {
+    eligible.forEach((i, n) => {
+      const mem = issueMembers(i);
+      L.push(`### ${n + 1}. ${i.name || "Unnamed priority"}`);
+
+      // Opening: what and where
+      let open = i.description ? i.description.trim() : "";
+      if (open && !/[.!?]$/.test(open)) open += ".";
+      const where = i.geography ? ` in ${i.geography}` : "";
+      const std = i.standard ? `deviation from ${i.standard}` : "a deviation from international standards";
+      const isProcess = (i.barrierType || "").startsWith("Process");
+      const isBoth = i.barrierType === "Both";
+      const frame = isProcess
+        ? `Here the international standard is not in dispute; the barrier is in how it is administered — the process, procedure, or enforcement departing from international norms (a WTO SPS Annex C concern).`
+        : isBoth
+        ? `Both the measure and its administration are at issue.`
+        : "";
+      L.push(
+        `**What it is.** The barrier${where} stems from ${std}.` + (open ? ` ${open}` : "") + (frame ? ` ${frame}` : "")
+      );
+
+      // Who it affects
+      if (mem.length) {
+        const sect = i.sectors && i.sectors.length ? i.sectors.map((s) => s.toLowerCase()) : [];
+        L.push(
+          `**Who it affects.** ${sect.length ? `This reaches ${andList(sect)}, and touches ` : "This touches "}` +
+          `${mem.length} of FAEA's ${MEMBERS.length} members — ${andList(mem.map((m) => m.name))}.`
+        );
+      }
+
+      // Why FAEA
+      if (i.screen && i.screen.notes && i.screen.notes.trim()) {
+        let note = i.screen.notes.trim();
+        if (!/[.!?]$/.test(note)) note += ".";
+        L.push(`**Why FAEA.** ${note}`);
+      }
+
+      // Why now — the cost of not acting
+      if ((i.inactionRisks && i.inactionRisks.length) || (i.inactionNote && i.inactionNote.trim())) {
+        const risks = (i.inactionRisks || []).map((r) => r.split(" — ")[0].toLowerCase());
+        let why = "";
+        if (risks.length) why += `The cost of staying out: ${andList(risks)}. `;
+        if (i.inactionNote && i.inactionNote.trim()) {
+          let nt = i.inactionNote.trim();
+          if (!/[.!?]$/.test(nt)) nt += ".";
+          why += nt;
+        }
+        L.push(`**Why now.** ${why.trim()}`);
+      }
+
+      // Member input (from the survey)
+      const mi = [];
+      if (i.successMetric && i.successMetric.trim()) mi.push(`members define success as ${i.successMetric.trim().replace(/[.]$/, "")}`);
+      if (i.mechanism) mi.push(`the preferred approach is ${i.mechanism.toLowerCase()}`);
+      if (mi.length) {
+        const lead = i.memberRank ? `Members rank this a ${i.memberRank.toLowerCase()} priority; ` : "";
+        L.push(`**What members told us.** ${lead}${mi.join("; ")}.`);
+      } else if (i.memberRank) {
+        L.push(`**What members told us.** Members rank this a ${i.memberRank.toLowerCase()} priority.`);
+      }
+
+      L.push(
+        `**Staff assessment.** Ranked ${n + 1} of ${eligible.length} on outcome potential, feasibility, ` +
+        `complementarity with existing efforts, and breadth across the membership.`
+      );
+      L.push("");
+    });
+  }
+
+  L.push("## What this docket covers across the membership");
+  const served = new Set();
+  eligible.forEach((i) => (i.members || []).forEach((m) => served.add(m)));
+  if (served.size) {
+    L.push(
+      `Taken together, these priorities serve ${served.size} of FAEA's ${MEMBERS.length} members. ` +
+      `The table below shows where each member's interests appear in the docket.`
+    );
+    L.push("");
+    MEMBERS.forEach((m) => {
+      const hit = eligible.filter((i) => (i.members || []).includes(m.id));
+      L.push(
+        hit.length
+          ? `- **${m.name}** — ${andList(hit.map((i) => i.name || "unnamed priority"))}`
+          : `- **${m.name}** — not directly addressed in this docket`
+      );
+    });
+    const untouched = MEMBERS.filter((m) => !served.has(m.id));
+    if (untouched.length) {
+      L.push("");
+      L.push(
+        `Staff note that ${andList(untouched.map((m) => m.short))} ${untouched.length === 1 ? "is" : "are"} ` +
+        `not directly served by this docket. That is a deliberate consequence of the breadth test rather than an ` +
+        `oversight, and it is a reasonable subject for board discussion.`
+      );
+    }
+  } else {
+    L.push("_No members have been mapped to docket priorities yet._");
+  }
+  L.push("");
+
+  L.push("## Considered and set aside");
+  if (declined.length) {
+    L.push(
+      `Staff examined ${data.issues.length} candidate ${data.issues.length === 1 ? "barrier" : "barriers"} in total. ` +
+      `The following did not clear the filter. Several are real and costly problems for individual members — ` +
+      `they simply are not work that a coalition of this kind is the right vehicle to carry.`
+    );
+    L.push("");
+    declined.forEach((i) => {
+      const failed = GATES.filter((g) => i.screen[g.key] === "no").map((g) => g.label);
+      const unsure = GATES.filter((g) => i.screen[g.key] === "unsure").map((g) => g.label);
+      let reason = "";
+      if (failed.length) reason = `Does not meet the ${andList(failed)} test${failed.length > 1 ? "s" : ""}.`;
+      else if (unsure.length) reason = `Unresolved on ${andList(unsure)}.`;
+      const note = i.screen && i.screen.notes ? ` ${i.screen.notes.trim()}` : "";
+      L.push(`- **${i.name || "Unnamed"}**${i.geography ? ` (${i.geography})` : ""} — ${reason}${note}`);
+    });
+  } else {
+    L.push("_Every candidate screened so far has cleared the filter._");
+  }
+  L.push("");
+
+  L.push("## What we are asking of the board");
+  L.push(
+    "Staff are not asking the board to generate priorities. We are asking for three things: " +
+    "confirmation that the filter reflects the board's understanding of FAEA's mandate; reaction to the " +
+    "priorities as ranked, including anything the board believes is mis-weighted; and a view on whether the " +
+    "members not directly served by this docket represent a gap worth correcting."
+  );
+
+  return L.join("\n");
+}
+
+function buildBoardMemo(data) {
+  const eligible = data.issues
+    .filter(isEligible)
+    .sort((a, b) => totalScore(b) - totalScore(a));
+  const lines = [];
+  lines.push("# FAEA Strategic Docket — Framing Memo");
+  lines.push("");
+  lines.push("## Eligibility filter");
+  lines.push("An issue enters the FAEA docket only if it clears all four gates:");
+  GATES.forEach((g, i) => lines.push(`${i + 1}. **${g.label}.** ${g.q}`));
+  lines.push("");
+  lines.push("## Ranked docket");
+  if (eligible.length) {
+    eligible.forEach((i, n) => {
+      lines.push(`### ${n + 1}. ${i.name || "Unnamed barrier"}`);
+      if (i.geography) lines.push(`**Geography:** ${i.geography}`);
+      if (i.standard) lines.push(`**Standard at issue:** ${i.standard}`);
+      if (i.barrierType) lines.push(`**Barrier type:** ${i.barrierType}`);
+      if (i.sectors && i.sectors.length) lines.push(`**Sectors affected:** ${i.sectors.join(", ")}`);
+      const mem = issueMembers(i);
+      if (mem.length) lines.push(`**Members served:** ${mem.map((m) => m.short).join(", ")} (${mem.length} of ${MEMBERS.length})`);
+      lines.push(`**Priority score:** ${totalScore(i)} / 20`);
+      if (i.description) lines.push(`**Issue:** ${i.description}`);
+      if (i.screen && i.screen.notes) lines.push(`**Screen notes:** ${i.screen.notes}`);
+      lines.push("");
+    });
+  } else lines.push("_Nothing has cleared the filter yet._");
+  lines.push("");
+  lines.push("## Membership representation");
+  const served = new Set();
+  eligible.forEach((i) => (i.members || []).forEach((m) => served.add(m)));
+  if (served.size) {
+    lines.push(`This docket touches ${served.size} of ${MEMBERS.length} FAEA members:`);
+    MEMBERS.forEach((m) => {
+      const hit = eligible.filter((i) => (i.members || []).includes(m.id));
+      if (hit.length) lines.push(`- **${m.short}** — ${hit.map((i) => i.name || "Unnamed").join("; ")}`);
+    });
+    const untouched = MEMBERS.filter((m) => !served.has(m.id));
+    if (untouched.length) lines.push(`- _Not yet represented: ${untouched.map((m) => m.short).join(", ")}_`);
+  } else lines.push("_No members tagged on eligible issues yet._");
+  lines.push("");
+  lines.push(`_Issues screened: ${data.issues.length} · Cleared filter: ${eligible.length}_`);
+  return lines.join("\n");
+}
+
+/* ============================================================ */
+function FAEAWorkspace() {
+  const { data, update, loaded, savedAt } = useWorkspace();
+  const [view, setView] = useState("dashboard");
+  const [importErr, setImportErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const fileRef = useRef(null);
+
+  const phases = useMemo(() => phaseProgress(data), [data]);
+  const overall = phases.reduce((s, p) => s + p.pct, 0) / phases.length;
+  const eligible = data.issues.filter(isEligible);
+
+  /* ------- mutators ------- */
+  const addIssue = () =>
+    update((d) => ({
+      ...d,
+      issues: [
+        ...d.issues,
+        { id: uid(), name: "", geography: "", standard: "", barrierType: "", members: [], sectors: [], description: "", inactionRisks: [], inactionNote: "", memberRank: "", successMetric: "", mechanism: "", screen: {}, scores: {} },
+      ],
+    }));
+  const editIssue = (id, patch) =>
+    update((d) => ({
+      ...d,
+      issues: d.issues.map((i) => (i.id === id ? { ...i, ...patch } : i)),
+    }));
+  const delIssue = (id) =>
+    update((d) => ({ ...d, issues: d.issues.filter((i) => i.id !== id) }));
+  const toggleSector = (issue, s) => {
+    const has = issue.sectors.includes(s);
+    editIssue(issue.id, { sectors: has ? issue.sectors.filter((x) => x !== s) : [...issue.sectors, s] });
+  };
+  const toggleMember = (issue, id) => {
+    const cur = issue.members || [];
+    const has = cur.includes(id);
+    editIssue(issue.id, { members: has ? cur.filter((x) => x !== id) : [...cur, id] });
+  };
+  const toggleInactionRisk = (issue, r) => {
+    const cur = issue.inactionRisks || [];
+    const has = cur.includes(r);
+    editIssue(issue.id, { inactionRisks: has ? cur.filter((x) => x !== r) : [...cur, r] });
+  };
+  const setGate = (issue, key, v) =>
+    editIssue(issue.id, { screen: { ...issue.screen, [key]: v } });
+  const setScore = (issue, key, v) =>
+    editIssue(issue.id, { scores: { ...issue.scores, [key]: v } });
+
+  const doImport = (file) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const parsed = JSON.parse(r.result);
+        update({ ...emptyState, ...parsed });
+        setImportErr("");
+      } catch {
+        setImportErr("That file isn't a valid workspace backup.");
+      }
+    };
+    r.readAsText(file);
+  };
+
+  /* ---- feed tray: ingest a feed file, triage items into Intake (never auto-docket) ---- */
+  const feedRef = useRef(null);
+  const [feedErr, setFeedErr] = useState("");
+  const importFeed = (file) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const parsed = JSON.parse(r.result);
+        const items = Array.isArray(parsed) ? parsed : parsed.feed || [];
+        if (!Array.isArray(items)) throw new Error();
+        // normalize + de-dupe against existing feed by url/title
+        update((d) => {
+          const seen = new Set((d.feed || []).map((f) => f.url || f.title));
+          const add = items
+            .filter((it) => it && (it.title || it.url) && !seen.has(it.url || it.title))
+            .map((it) => ({
+              id: uid(),
+              title: it.title || "Untitled report",
+              source: it.source || "GAIN",
+              date: it.date || "",
+              country: it.country || "",
+              url: it.url || "",
+              sectors: Array.isArray(it.sectors) ? it.sectors.filter((s) => SECTORS.includes(s)) : [],
+            }));
+          return { ...d, feed: [...add, ...(d.feed || [])] };
+        });
+        setFeedErr("");
+      } catch {
+        setFeedErr("That file isn't a valid feed (expected a JSON array of items).");
+      }
+    };
+    r.readAsText(file);
+  };
+  const dismissFeed = (id) =>
+    update((d) => ({ ...d, feed: (d.feed || []).filter((f) => f.id !== id) }));
+  const feedToIntake = (item) =>
+    update((d) => ({
+      ...d,
+      issues: [
+        ...d.issues,
+        {
+          id: uid(), name: item.title || "", geography: item.country || "", standard: "", barrierType: "",
+          members: [], sectors: item.sectors || [], description: item.url ? `From ${item.source || "GAIN"} (${item.date || "n.d."}): ${item.url}` : "",
+          inactionRisks: [], inactionNote: "", memberRank: "", successMetric: "", mechanism: "", screen: {}, scores: {},
+        },
+      ],
+      feed: (d.feed || []).filter((f) => f.id !== item.id),
+    }));
+    return (
+      <div style={{ background: PALETTE.paper, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: PALETTE.mute, fontFamily: "Archivo, sans-serif" }}>
+        Loading workspace…
+      </div>
+    );
+
+  /* ------- shared header ------- */
+  const Header = ({ title, sub }) => (
+    <div className="ph-head">
+      <button className="back" onClick={() => setView("dashboard")}>← Dashboard</button>
+      <h2 className="ph-title">{title}</h2>
+      {sub && <p className="ph-sub">{sub}</p>}
+    </div>
+  );
+
+  /* ------- views ------- */
+  const Dashboard = (
+    <>
+      <div className="masthead">
+        <div className="eyebrow">FAEA · Strategic Docket Builder</div>
+        <h1 className="h1">From everything worth doing<br />to the work only FAEA can do.</h1>
+        <p className="lede">
+          A staff-driven pipeline: log candidate issues, run the four-gate
+          filter, score what survives, and hand the board a docket to react
+          to — not generate.
+        </p>
+      </div>
+
+      <div className="progress-card">
+        <div className="big-num">{Math.round(overall * 100)}<span className="pct-sign">%</span></div>
+        <div className="big-label">Pipeline complete</div>
+        <Bar pct={overall} height={8} />
+        <div className="prog-stats">
+          <span>{data.issues.length} candidates</span>
+          <span>{eligible.length} clear the filter</span>
+          <span>{eligible.filter(isScored).length} scored</span>
+        </div>
+      </div>
+
+      <div className="section-label">Phases</div>
+      {phases.map((p, n) => (
+        <button key={p.id} className="phase-card" onClick={() => setView(p.id)}>
+          <div className="phase-num">{String(n + 1).padStart(2, "0")}</div>
+          <div className="phase-body">
+            <div className="phase-name">{p.name}</div>
+            <div className="phase-sub">{p.sub}</div>
+            <Bar pct={p.pct} />
+            <div className="phase-stat">{p.stat} · {Math.round(p.pct * 100)}%</div>
+          </div>
+          <div className="phase-go">→</div>
+        </button>
+      ))}
+
+      <div className="section-label">Reference</div>
+      <button className="phase-card" onClick={() => setView("convergence")}>
+        <div className="phase-num">◇</div>
+        <div className="phase-body">
+          <div className="phase-name">Convergence</div>
+          <div className="phase-sub">Where member priorities stack up — the cross-cutting program candidates</div>
+        </div>
+        <div className="phase-go">→</div>
+      </button>
+      <button className="phase-card" onClick={() => setView("standards")}>
+        <div className="phase-num">◷</div>
+        <div className="phase-body">
+          <div className="phase-name">Standards Watch</div>
+          <div className="phase-sub">Codex sessions & WTO notifications — shape the standard before it becomes a barrier</div>
+        </div>
+        <div className="phase-go">→</div>
+      </button>
+      <button className="phase-card" onClick={() => setView("feed")}>
+        <div className="phase-num">⊕</div>
+        <div className="phase-body">
+          <div className="phase-name">New &amp; unverified{(data.feed || []).length > 0 ? ` · ${data.feed.length}` : ""}</div>
+          <div className="phase-sub">Feed inbox — GAIN reports and notifications, parked for triage into Intake</div>
+        </div>
+        <div className="phase-go">→</div>
+      </button>
+      <button className="phase-card" onClick={() => setView("members")}>
+        <div className="phase-num">★</div>
+        <div className="phase-body">
+          <div className="phase-name">FAEA Membership</div>
+          <div className="phase-sub">The 10 members, their interests, and the shared threads a representative docket should serve</div>
+        </div>
+        <div className="phase-go">→</div>
+      </button>
+
+      <div className="section-label">Outputs</div>
+      <div className="btn-row">
+        <button className="btn primary" onClick={() =>
+          download("FAEA-board-narrative.html", memoToHtml(buildBoardNarrative(data), "FAEA Strategic Docket"), "text/html")}>
+          Export board narrative
+        </button>
+        <button className="btn" onClick={() =>
+          download("FAEA-board-memo.html", memoToHtml(buildBoardMemo(data), "FAEA Strategic Docket — Framing Memo"), "text/html")}>
+          Export working memo
+        </button>
+        <button className="btn" onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(buildBoardMemo(data));
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          } catch (e) { setCopied(false); }
+        }}>
+          {copied ? "✓ Copied" : "Copy memo text"}
+        </button>
+        <button className="btn" onClick={() => download("faea-workspace-backup.json", JSON.stringify(data, null, 2), "application/json")}>
+          Export JSON backup
+        </button>
+        <button className="btn" onClick={() => fileRef.current && fileRef.current.click()}>Import backup</button>
+        <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
+          onChange={(e) => e.target.files[0] && doImport(e.target.files[0])} />
+      </div>
+      {importErr && <div className="err">{importErr}</div>}
+      <div className="save-note">
+        <strong>Board narrative</strong> is the descriptive, member-facing version — prose framing,
+        each priority explained, and the issues you declined. <strong>Working memo</strong> is the
+        internal version with scores and field labels. Both download as formatted documents:
+        double-click to open in your browser, then print to PDF or paste into Word.
+        {savedAt && ` Last saved ${savedAt.toLocaleTimeString()}.`}
+      </div>
+    </>
+  );
+
+  const Intake = (
+    <>
+      <Header title="Issue Intake" sub="Log every candidate barrier without judging it yet. The filter does the judging in the next phase." />
+      <div className="form-intro">
+        <strong>How to use this phase.</strong> Add one card per barrier and fill in what you know —
+        don't worry yet about whether it belongs on the docket; that's what the Eligibility Screen is for.
+        Anything left blank can be filled in later. The Description and the tags you set here become the
+        body of the exported board narrative, so a little care now saves rewriting at the end.
+      </div>
+      {data.issues.map((i) => (
+        <div key={i.id} className="card">
+          <Field label="Barrier name"
+            help="A short, specific title naming the measure and what it does — e.g. 'Import MRLs set below Codex levels for soybeans'. Leave the country out; that goes in Geography.">
+            <input className="inp" value={i.name} placeholder="e.g. Import MRLs below Codex levels for soybeans"
+              onChange={(e) => editIssue(i.id, { name: e.target.value })} />
+          </Field>
+          <Field label="Geography"
+            help="The country, region, or trade bloc where the barrier applies. List several if it spans markets.">
+            <input className="inp" value={i.geography} placeholder="e.g. Indonesia and other ART partners"
+              onChange={(e) => editIssue(i.id, { geography: e.target.value })} />
+          </Field>
+          <Field label="International standard at issue"
+            help="Which international standard is the hook. Codex = food safety, MRLs, additives · WOAH = animal health · IPPC = plant health · WTO SPS = transparency & process (the hook for undue-delay and procedural barriers). Choose 'Other · multiple' if it spans several.">
+            <select className="inp" value={i.standard} onChange={(e) => editIssue(i.id, { standard: e.target.value })}>
+              <option value="">Select…</option>
+              {STANDARDS.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Barrier type"
+            help="Is the problem the measure itself, or how it's run? A rule can be fully Codex/WOAH/IPPC-aligned and still block trade through slow, opaque, or duplicative administration — those process barriers hook to WTO SPS Annex C (undue delay, procedure) and are often the best fit for FAEA's capacity-building model.">
+            <select className="inp" value={i.barrierType || ""} onChange={(e) => editIssue(i.id, { barrierType: e.target.value })}>
+              <option value="">Select…</option>
+              {BARRIER_TYPES.map((b) => <option key={b}>{b}</option>)}
+            </select>
+          </Field>
+          <Field label="Sectors affected"
+            help="Tap every FAEA sector the barrier touches. Two or more is a signal the cross-sector gate will clear in the next phase.">
+            <div className="chip-wrap">
+              {SECTORS.map((s) => (
+                <button key={s} className={`chip ${i.sectors.includes(s) ? "chip-on" : ""}`}
+                  onClick={() => toggleSector(i, s)}>{s}</button>
+              ))}
+            </div>
+          </Field>
+          <Field label="FAEA members affected"
+            help="Tap each member whose exports this barrier genuinely hits. This drives the automatic member-breadth score — be inclusive but honest; don't tag a member the barrier doesn't really touch.">
+            <div className="chip-wrap">
+              {MEMBERS.map((m) => (
+                <button key={m.id} className={`chip ${(i.members || []).includes(m.id) ? "chip-on" : ""}`}
+                  title={m.name} onClick={() => toggleMember(i, m.id)}>{m.short}</button>
+              ))}
+            </div>
+            {(i.members || []).length > 0 && (
+              <div className="member-hint">
+                Touches {(i.members || []).length} of {MEMBERS.length} members · sectors: {memberSectors(i).join(", ") || "—"}
+              </div>
+            )}
+          </Field>
+          <Field label="Description"
+            help="A few plain sentences a board member could read cold: what the measure requires, how it blocks trade, and what FAEA's collaborative role would be. This becomes the body text in the board narrative.">
+            <textarea className="inp ta" rows={3} value={i.description}
+              placeholder="What the barrier requires, how it blocks trade, and where FAEA's collaborative role fits"
+              onChange={(e) => editIssue(i.id, { description: e.target.value })} />
+          </Field>
+          <div className="survey-band">Stakes — the cost of not acting</div>
+          <Field label="Risk if FAEA doesn't engage"
+            help="What happens if FAEA stays out of this market. A barrier a competitor is exploiting, or one that could spread to other markets, is more urgent than breadth alone shows — this is the 'why now' the board narrative needs.">
+            <div className="chip-wrap">
+              {INACTION_RISKS.map((r) => (
+                <button key={r} className={`chip ${(i.inactionRisks || []).includes(r) ? "chip-on" : ""}`}
+                  onClick={() => toggleInactionRisk(i, r)}>{r}</button>
+              ))}
+            </div>
+          </Field>
+          <Field label="What's at stake / who's moving"
+            help="Name the competitor or the contagion path: which exporter is gaining while the U.S. is blocked, what export value is exposed, or which markets could copy the measure.">
+            <textarea className="inp ta" rows={2} value={i.inactionNote || ""}
+              placeholder="e.g. Australia is taking share under its own beef access while U.S. plants stay delisted; measure mirrors an EU rule others may adopt"
+              onChange={(e) => editIssue(i.id, { inactionNote: e.target.value })} />
+          </Field>
+          <div className="survey-band">Member input — from the survey</div>
+          <Field label="Member priority level"
+            help="How the affected members rank this barrier among their own priorities (from the survey). Public priority ≠ internal priority — this is what should weight Outcome potential in scoring.">
+            <select className="inp" value={i.memberRank || ""} onChange={(e) => editIssue(i.id, { memberRank: e.target.value })}>
+              <option value="">Not yet surveyed…</option>
+              {MEMBER_RANK.map((r) => <option key={r}>{r}</option>)}
+            </select>
+          </Field>
+          <Field label="What success looks like (12–24 months)"
+            help="The outcome the members would call a win — scoped and time-bound, not a topic. Turns a barrier into a program and sharpens the Outcome and Feasibility scores.">
+            <textarea className="inp ta" rows={2} value={i.successMetric || ""}
+              placeholder="e.g. Partner recognizes U.S. ractopamine-free certification within 18 months"
+              onChange={(e) => editIssue(i.id, { successMetric: e.target.value })} />
+          </Field>
+          <Field label="Preferred mechanism"
+            help="How members would want FAEA to act. Capacity-building and standards-body work fit FAEA's model best; if members want pure enforcement, that's a signal it belongs in USTR's lane.">
+            <select className="inp" value={i.mechanism || ""} onChange={(e) => editIssue(i.id, { mechanism: e.target.value })}>
+              <option value="">Not yet surveyed…</option>
+              {MECHANISMS.map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </Field>
+          <button className="link-del" onClick={() => delIssue(i.id)}>Remove</button>
+        </div>
+      ))}
+      <button className="btn primary" onClick={addIssue}>+ Add candidate barrier</button>
+    </>
+  );
+
+  const Screen = (
+    <>
+      <Header title="Eligibility Screen" sub="Four gates. An issue joins the docket pipeline only if it clears all four — the filter is the mandate." />
+      <div className="form-intro">
+        For each barrier, answer all four gates. <strong>Clears</strong> = yes, it passes ·
+        <strong> Fails</strong> = no, it doesn't · <strong>Unsure</strong> = you need more input before deciding.
+        An issue advances to scoring only when all four Clear; a single Fail or Unsure holds it out — which is
+        the filter working, not a problem to fix.
+      </div>
+      {data.issues.length === 0 && <div className="empty">No candidates yet. Add barriers in Issue Intake first.</div>}
+      {data.issues.map((i) => {
+        const done = gateAnswered(i);
+        const clear = isEligible(i);
+        return (
+          <div key={i.id} className="card">
+            <div className="card-title-row">
+              <div className="card-title">{i.name || "Unnamed barrier"}</div>
+              {done && (
+                <span className="stamp big-stamp" style={{
+                  color: clear ? PALETTE.pass : PALETTE.fail,
+                  borderColor: clear ? PALETTE.pass : PALETTE.fail,
+                }}>
+                  {clear ? "CLEARS FILTER" : "EXITS PIPELINE"}
+                </span>
+              )}
+            </div>
+            {GATES.map((g) => (
+              <div key={g.key} className="gate">
+                <div className="gate-q"><strong>{g.label}.</strong> {g.q}</div>
+                <div className="gate-btns">
+                  {["yes", "no", "unsure"].map((v) => (
+                    <button key={v}
+                      className={`gate-btn ${i.screen[g.key] === v ? "gate-on" : ""}`}
+                      style={i.screen[g.key] === v ? {
+                        borderColor: v === "yes" ? PALETTE.pass : v === "no" ? PALETTE.fail : PALETTE.unsure,
+                        color: v === "yes" ? PALETTE.pass : v === "no" ? PALETTE.fail : PALETTE.unsure,
+                      } : {}}
+                      onClick={() => setGate(i, g.key, v)}>
+                      {v === "yes" ? "Clears" : v === "no" ? "Fails" : "Unsure"}
+                    </button>
+                  ))}
+                </div>
+                {g.key === "complement" && (
+                  <>
+                    {issueMembers(i).length > 0 && (
+                      <div className="fas-check">
+                        <div className="fas-check-label">Tagged members' existing FAS channel — is the barrier already covered here?</div>
+                        {issueMembers(i).map((m) => (
+                          <div key={m.id} className="fas-row"><span className="fas-who">{m.short}</span> — {m.fas}</div>
+                        ))}
+                      </div>
+                    )}
+                    {(() => {
+                      const groups = [...new Set((i.sectors || []).flatMap((s) => NONMEMBER_BY_SECTOR[s] || []))].sort();
+                      return groups.length ? (
+                        <div className="fas-check nonmember">
+                          <div className="fas-check-label">Non-member groups in these sectors — check for overlap</div>
+                          <div className="nonmember-list">{groups.join(" · ")}</div>
+                          <div className="nonmember-note">These hold their own FAS market-development funds and may already cover this product or issue. If one does, that's a Fails or Unsure.</div>
+                        </div>
+                      ) : (
+                        <div className="fas-check nonmember">
+                          <div className="fas-check-label">Non-member groups</div>
+                          <div className="nonmember-note">Tag this issue's sectors to see which non-member associations to check for overlap.</div>
+                        </div>
+                      );
+                    })()}
+                    <details className="whos-here">
+                      <summary>Who's already here? — check before you answer</summary>
+                      <div className="wh-body">
+                        {FIELD_MAP.map((grp) => (
+                          <div key={grp.group} className="wh-group">
+                            <div className="wh-group-label">{grp.group}</div>
+                            {grp.items.map((it, n) => (
+                              <div key={n} className="wh-item"><span className="wh-who">{it.who}</span> — {it.note}</div>
+                            ))}
+                          </div>
+                        ))}
+                        <div className="wh-foot">
+                          If another FAS-funded group is already on this — a single member's own program, or a
+                          non-member association covering the same product or issue — that's a Fails or Unsure here.
+                          The government rows are FAEA's funding rails and machinery to direct, not duplicators. FAEA's
+                          lane is coordinating across the membership so MAP fills the gaps other programs leave.
+                        </div>
+                      </div>
+                    </details>
+                  </>
+                )}
+              </div>
+            ))}
+            <Field label="Screen notes"
+              help="Evidence for your answers, caveats, and who to consult. If you marked anything Unsure, note what would resolve it. This text carries into the board narrative's decline reasons.">
+              <textarea className="inp ta" rows={2} value={i.screen.notes || ""}
+                onChange={(e) => setGate(i, "notes", e.target.value)} />
+            </Field>
+          </div>
+        );
+      })}
+    </>
+  );
+
+  const Priority = (
+    <>
+      <Header title="Prioritization" sub="Score the three judgment axes 1–5; member breadth is scored automatically from the members you tagged in Intake. The ranking writes itself." />
+      <div className="form-intro">
+        Only issues that cleared the filter appear here. Score each axis <strong>1 = weak, 3 = moderate,
+        5 = strong</strong>. Member breadth fills in on its own from the members you tagged in Intake, so the
+        four axes total out of 20 and the list re-sorts highest first as you go.
+      </div>
+      {eligible.length === 0 && <div className="empty">Nothing has cleared the eligibility screen yet.</div>}
+      {[...eligible].sort((a, b) => totalScore(b) - totalScore(a)).map((i) => (
+        <div key={i.id} className="card">
+          <div className="card-title-row">
+            <div className="card-title">{i.name || "Unnamed barrier"}</div>
+            <div className="score-total">{totalScore(i)}<span className="score-den">/20</span></div>
+          </div>
+          {SCORE_AXES.map((a) => (
+            <div key={a.key} className="axis">
+              <div className="axis-l">{a.label}<span className="axis-hint"> — {a.hint}</span></div>
+              <div className="gate-btns">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button key={n} className={`num-btn ${i.scores[a.key] === n ? "num-on" : ""}`}
+                    onClick={() => setScore(i, a.key, n)}>{n}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="axis">
+            <div className="axis-l">Member breadth<span className="axis-hint"> — auto-scored from the members tagged in Intake</span></div>
+            {(i.members || []).length === 0 ? (
+              <div className="breadth-none">No members tagged yet — set this in Issue Intake. Breadth scores 0 until at least one member is affected.</div>
+            ) : (
+              <div className="breadth-read">
+                <span className="breadth-score">{memberBreadthScore(i)}<span className="score-den">/5</span></span>
+                <span className="breadth-detail">{(i.members || []).length} member{(i.members || []).length === 1 ? "" : "s"} · {issueMembers(i).map((m) => m.short).join(", ")}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+
+  const Feed = (
+    <>
+      <Header title="New & unverified" sub="Candidate barriers pulled from feeds (GAIN, notifications), parked for triage. Nothing here is on the docket — you decide what's in scope, whose issue it is, and whether it's already resolved, then send it to Intake." />
+      <div className="form-intro">
+        This is an inbox, not an autopilot. A feed can flag that <em>something changed</em>; it can't judge what it means — that's the same discipline that caught the ART-resolved barriers. Review each item, then <strong>Send to Intake</strong> (to verify and screen it) or <strong>Dismiss</strong>.
+      </div>
+      <div className="btn-row" style={{ marginBottom: 14 }}>
+        <button className="btn" onClick={() => feedRef.current && feedRef.current.click()}>Import feed file (.json)</button>
+        <input ref={feedRef} type="file" accept="application/json" style={{ display: "none" }}
+          onChange={(e) => e.target.files[0] && importFeed(e.target.files[0])} />
+        {(data.feed || []).length > 0 && <span className="save-note" style={{ alignSelf: "center" }}>{data.feed.length} item{data.feed.length === 1 ? "" : "s"} waiting</span>}
+      </div>
+      {feedErr && <div className="err">{feedErr}</div>}
+      {(data.feed || []).length === 0 ? (
+        <div className="empty">No feed items. Generate a feed file with the FAS fetcher script and import it here — or wire the serverless proxy to populate this automatically.</div>
+      ) : (
+        (data.feed || []).map((f) => (
+          <div key={f.id} className="feed-item">
+            <div className="feed-title">{f.title}</div>
+            <div className="feed-meta">
+              <span className="std-tag">{f.source}</span>
+              {f.country && <span className="feed-country">{f.country}</span>}
+              {f.date && <span className="feed-date">{f.date}</span>}
+              {f.sectors && f.sectors.length > 0 && <span className="feed-sectors">{f.sectors.join(" · ")}</span>}
+            </div>
+            {f.url && <a className="feed-link" href={f.url} target="_blank" rel="noreferrer">Open report ↗</a>}
+            <div className="feed-actions">
+              <button className="btn primary" onClick={() => feedToIntake(f)}>Send to Intake</button>
+              <button className="btn" onClick={() => dismissFeed(f.id)}>Dismiss</button>
+            </div>
+          </div>
+        ))
+      )}
+    </>
+  );
+
+  const Standards = (
+    <>
+      <Header title="Standards Watch" sub="The upstream lane — Codex sessions and WTO notifications where tomorrow's MRL and certification barriers are being decided now. Shaping the standard beats fighting the barrier market-by-market." />
+      <div className="form-intro">
+        This is FAEA's get-ahead-of-it play. Each Codex session below has a U.S. public-comment on-ramp; the WTO feed is the live early-warning stream. Where the U.S. position already matches what FAEA would want, the move is coordinated member support — not opposition.
+      </div>
+      <div className="section-label">Codex — upcoming</div>
+      {STANDARDS_WATCH.filter((s) => s.status === "upcoming").map((s) => (
+        <div key={s.body} className="cluster">
+          <div className="cluster-head">
+            <div className="cluster-label">{s.body} · {s.title}</div>
+            <div className="std-when">{s.date}{s.place !== "—" ? ` · ${s.place}` : ""}</div>
+          </div>
+          <div className="std-items">{s.items.join(" · ")}</div>
+          <div className="std-line"><span className="std-tag">FAEA thread</span> {s.threads.join("; ")}</div>
+          <div className="std-line"><span className="std-tag">U.S. position</span> {s.us}</div>
+          <div className="std-line"><span className="std-tag">Comment</span> {s.comment}</div>
+        </div>
+      ))}
+      <div className="section-label">Codex — concluded this cycle</div>
+      {STANDARDS_WATCH.filter((s) => s.status === "concluded").map((s) => (
+        <div key={s.body} className="cluster concluded">
+          <div className="cluster-head">
+            <div className="cluster-label">{s.body} · {s.title}</div>
+            <div className="std-when">{s.date}{s.place !== "—" ? ` · ${s.place}` : ""}</div>
+          </div>
+          <div className="std-items">{s.items.join(" · ")}</div>
+          <div className="std-line"><span className="std-tag">FAEA thread</span> {s.threads.join("; ")}</div>
+          <div className="std-line"><span className="std-tag">Outcome / U.S.</span> {s.us}</div>
+        </div>
+      ))}
+      <div className="section-label">WTO SPS/TBT notifications — the live feed</div>
+      <div className="cluster">
+        <div className="std-line"><span className="std-tag">Feed</span> {WTO_WATCH.feed}</div>
+        <div className="std-items" style={{ margin: "8px 0" }}>{WTO_WATCH.note}</div>
+        <div className="std-tag" style={{ marginBottom: 4 }}>Watch for</div>
+        {WTO_WATCH.watch.map((w, n) => <div key={n} className="wh-item">• {w}</div>)}
+      </div>
+    </>
+  );
+
+  const Convergence = (() => {
+    const issues = data.issues;
+    const distinct = (list) => new Set(list.flatMap((i) => i.members || []));
+    const groupBy = (keyFn) => {
+      const map = {};
+      issues.forEach((i) => { const k = keyFn(i); if (!k) return; (map[k] = map[k] || []).push(i); });
+      return Object.entries(map).sort((a, b) => distinct(b[1]).size - distinct(a[1]).size);
+    };
+    const clusterCard = (label, list) => {
+      const mem = [...distinct(list)];
+      const elig = list.filter(isEligible).length;
+      return (
+        <div key={label} className="cluster">
+          <div className="cluster-head">
+            <div className="cluster-label">{label}</div>
+            <div className="cluster-count">{mem.length}<span className="cluster-den">/{MEMBERS.length}</span></div>
+          </div>
+          <div className="cluster-meta">
+            {list.length} barrier{list.length === 1 ? "" : "s"} · {elig} clear the filter
+            {mem.length >= 5 && <span className="cluster-badge">coalition-scale</span>}
+          </div>
+          <div className="cluster-members">
+            {mem.map((id) => { const m = memberById(id); return m ? <span key={id} className="mem-tag">{m.short}</span> : null; })}
+          </div>
+          <div className="cluster-issues">{list.map((i) => i.name || "Unnamed barrier").join(" · ")}</div>
+        </div>
+      );
+    };
+
+    const byStandard = groupBy((i) => i.standard);
+    const byType = groupBy((i) => i.barrierType);
+    const memberRep = MEMBERS
+      .map((m) => ({ m, n: issues.filter((i) => (i.members || []).includes(m.id)).length }))
+      .sort((a, b) => b.n - a.n);
+    const maxRep = Math.max(1, ...memberRep.map((r) => r.n));
+    const allMembers = distinct(issues).size;
+
+    return (
+      <>
+        <Header title="Convergence" sub="Where members' priorities stack up on the same problem. A barrier several members independently flag is coalition-scale by construction — these are the clearest program candidates." />
+        {issues.length === 0 ? (
+          <div className="empty">No candidates logged yet. Add barriers in Issue Intake and tag their members, standard, and barrier type — the clusters build here automatically.</div>
+        ) : (
+          <>
+            <div className="conv-summary">
+              {issues.length} candidate{issues.length === 1 ? "" : "s"} · touching {allMembers} of {MEMBERS.length} members · {issues.filter(isEligible).length} clear the filter
+            </div>
+
+            <div className="section-label">By international standard</div>
+            {byStandard.length
+              ? byStandard.map(([k, list]) => clusterCard(k, list))
+              : <div className="empty">Tag issues with a standard to see convergence here.</div>}
+
+            <div className="section-label">By barrier type</div>
+            {byType.length
+              ? byType.map(([k, list]) => clusterCard(k, list))
+              : <div className="empty">Tag issues with a barrier type — the process/administration cluster is often the broadest.</div>}
+
+            <div className="section-label">Member representation</div>
+            <div className="card">
+              <p className="ph-sub" style={{ marginBottom: 10 }}>
+                How many candidates touch each member. The zeros are the representation gaps a board should notice before signing off.
+              </p>
+              {memberRep.map(({ m, n }) => (
+                <div key={m.id} className="rep-row">
+                  <span className="rep-name">{m.short}</span>
+                  <span className="rep-bar-wrap"><span className="rep-bar" style={{ width: `${(n / maxRep) * 100}%` }} /></span>
+                  <span className="rep-n">{n}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </>
+    );
+  })();
+
+  const Members = (
+    <>
+      <Header title="FAEA Membership" sub="The coalition the docket must represent. Tag candidate issues by member in Intake; member breadth then scores automatically in Prioritization." />
+      <div className="section-label">Members · {MEMBERS.length}</div>
+      {MEMBERS.map((m) => (
+        <div key={m.id} className="card">
+          <div className="card-title-row">
+            <div className="card-title">{m.name}</div>
+            <div className="mem-short">{m.short}</div>
+          </div>
+          <div className="mem-sectors">
+            {m.sectors.map((s) => <span key={s} className="mem-tag">{s}</span>)}
+          </div>
+          <div className="mem-interests">{m.interests}</div>
+          <div className="mem-fas"><span className="mem-fas-label">FAS channel:</span> {m.fas}</div>
+        </div>
+      ))}
+      <div className="section-label">Shared threads across the membership</div>
+      <div className="card">
+        <p className="ph-sub" style={{ marginBottom: 6 }}>
+          Where several members converge at once — the strongest candidates for the docket, since they pass the "representative of the whole" test by construction.
+        </p>
+        {SHARED_THREADS.map((t, n) => <div key={n} className="thread">{t}</div>)}
+      </div>
+    </>
+  );
+
+  const viewMap = {
+    dashboard: Dashboard,
+    intake: Intake,
+    screen: Screen,
+    priority: Priority,
+    convergence: Convergence,
+    standards: Standards,
+    feed: Feed,
+    members: Members,
+  };
+
+  return (
+    <div className="wrap">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800;900&family=IBM+Plex+Mono:wght@400;600&display=swap');
+        * { box-sizing: border-box; }
+        .wrap {
+          min-height: 100vh; background: ${PALETTE.paper}; color: ${PALETTE.ink};
+          font-family: 'Archivo', system-ui, sans-serif;
+          padding: 28px 18px 80px; max-width: 720px; margin: 0 auto;
+        }
+        .eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .18em;
+          text-transform: uppercase; color: ${PALETTE.wheat}; font-weight: 600; margin-bottom: 10px; }
+        .h1 { font-size: clamp(30px, 6vw, 44px); font-weight: 900; line-height: 1.05;
+          letter-spacing: -0.02em; margin: 0 0 14px; color: ${PALETTE.ink}; }
+        .lede { color: ${PALETTE.mute}; font-size: 15px; line-height: 1.55; margin: 0 0 26px; max-width: 56ch; }
+        .progress-card { background: ${PALETTE.field}; color: #fff; border-radius: 14px;
+          padding: 22px 20px; margin-bottom: 30px; }
+        .big-num { font-family: 'IBM Plex Mono', monospace; font-size: 52px; font-weight: 600; line-height: 1; }
+        .pct-sign { font-size: 26px; color: ${PALETTE.wheat}; }
+        .big-label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+          color: ${PALETTE.wheatSoft}; margin: 4px 0 14px; }
+        .prog-stats { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px;
+          font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: ${PALETTE.wheatSoft}; }
+        .bar { background: rgba(0,0,0,.14); border-radius: 99px; overflow: hidden; }
+        .phase-card .bar { background: #EDE9DE; margin-top: 8px; }
+        .bar-fill { height: 100%; background: ${PALETTE.wheat}; border-radius: 99px; transition: width .3s; }
+        .section-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .18em;
+          text-transform: uppercase; color: ${PALETTE.mute}; margin: 26px 0 12px; }
+        .phase-card { display: flex; gap: 14px; align-items: flex-start; width: 100%;
+          text-align: left; background: ${PALETTE.card}; border: 1px solid ${PALETTE.line};
+          border-radius: 12px; padding: 16px; margin-bottom: 10px; cursor: pointer;
+          transition: border-color .15s, transform .1s; font-family: inherit; color: inherit; }
+        .phase-card:hover { border-color: ${PALETTE.wheat}; }
+        .phase-card:focus-visible { outline: 2px solid ${PALETTE.wheat}; outline-offset: 2px; }
+        .phase-num { font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600;
+          color: ${PALETTE.wheat}; padding-top: 3px; }
+        .phase-body { flex: 1; min-width: 0; }
+        .phase-name { font-weight: 800; font-size: 16px; }
+        .phase-sub { font-size: 13px; color: ${PALETTE.mute}; margin: 2px 0 0; line-height: 1.4; }
+        .phase-stat { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: ${PALETTE.mute}; margin-top: 6px; }
+        .phase-go { color: ${PALETTE.wheat}; font-size: 18px; padding-top: 2px; }
+        .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn { font-family: 'Archivo', sans-serif; font-weight: 700; font-size: 14px;
+          padding: 11px 16px; border-radius: 10px; border: 1.5px solid ${PALETTE.ink};
+          background: transparent; color: ${PALETTE.ink}; cursor: pointer; }
+        .btn.primary { background: ${PALETTE.ink}; color: ${PALETTE.paper}; }
+        .btn:focus-visible { outline: 2px solid ${PALETTE.wheat}; outline-offset: 2px; }
+        .save-note { font-size: 12px; color: ${PALETTE.mute}; margin-top: 16px; line-height: 1.5;
+          border-top: 1px solid ${PALETTE.line}; padding-top: 12px; }
+        .err { color: ${PALETTE.fail}; font-size: 13px; margin-top: 8px; }
+        .ph-head { margin-bottom: 20px; }
+        .back { background: none; border: none; color: ${PALETTE.wheat}; font-family: 'IBM Plex Mono', monospace;
+          font-size: 12px; letter-spacing: .1em; cursor: pointer; padding: 0; margin-bottom: 12px; font-weight: 600; }
+        .ph-title { font-size: 28px; font-weight: 900; margin: 0 0 6px; letter-spacing: -0.01em; }
+        .ph-sub { color: ${PALETTE.mute}; font-size: 14px; line-height: 1.5; margin: 0; max-width: 58ch; }
+        .card { background: ${PALETTE.card}; border: 1px solid ${PALETTE.line}; border-radius: 12px;
+          padding: 16px; margin-bottom: 12px; }
+        .card-sel { border-color: ${PALETTE.pass}; border-width: 1.5px; }
+        .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+        .card-title { font-weight: 800; font-size: 16px; }
+        .fld { display: block; margin-bottom: 12px; }
+        .fld-l { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+          letter-spacing: .08em; text-transform: uppercase; color: ${PALETTE.mute}; margin-bottom: 5px; }
+        .fld-help { display: block; font-family: 'Archivo', sans-serif; font-size: 12.5px;
+          line-height: 1.45; color: ${PALETTE.mute}; margin: -1px 0 8px; font-weight: 400;
+          text-transform: none; letter-spacing: 0; }
+        .form-intro { font-family: 'Archivo', sans-serif; font-size: 13px; line-height: 1.55;
+          color: ${PALETTE.ink}; background: ${PALETTE.wheatSoft}; border: 1px solid ${PALETTE.line};
+          border-left: 3px solid ${PALETTE.wheat}; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+        .form-intro strong { color: ${PALETTE.field}; }
+        .whos-here { margin: 10px 0 2px; border: 1px solid ${PALETTE.line}; border-radius: 8px; background: ${PALETTE.paper}; }
+        .whos-here > summary { cursor: pointer; padding: 8px 12px; font-family: 'IBM Plex Mono', monospace;
+          font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: ${PALETTE.field}; list-style: none; }
+        .whos-here > summary::-webkit-details-marker { display: none; }
+        .whos-here > summary::before { content: "▸ "; color: ${PALETTE.wheat}; }
+        .whos-here[open] > summary::before { content: "▾ "; }
+        .wh-body { padding: 2px 12px 12px; }
+        .wh-group { margin-top: 10px; }
+        .wh-group-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .06em;
+          text-transform: uppercase; color: ${PALETTE.mute}; margin-bottom: 4px; }
+        .wh-item { font-size: 12.5px; line-height: 1.45; color: ${PALETTE.ink}; margin: 3px 0; }
+        .wh-who { font-weight: 600; color: ${PALETTE.field}; }
+        .wh-foot { margin-top: 12px; font-size: 12px; line-height: 1.5; color: ${PALETTE.mute}; font-style: italic;
+          border-top: 1px dashed ${PALETTE.line}; padding-top: 8px; }
+        .fas-check { margin: 10px 0 2px; padding: 10px 12px; background: ${PALETTE.wheatSoft};
+          border: 1px solid ${PALETTE.line}; border-radius: 8px; }
+        .fas-check-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .05em;
+          text-transform: uppercase; color: ${PALETTE.field}; margin-bottom: 6px; }
+        .fas-row { font-size: 12.5px; line-height: 1.45; color: ${PALETTE.ink}; margin: 3px 0; }
+        .fas-who { font-weight: 600; color: ${PALETTE.field}; }
+        .nonmember { background: ${PALETTE.paper}; }
+        .nonmember-list { font-size: 12.5px; line-height: 1.5; color: ${PALETTE.ink}; margin-bottom: 6px; }
+        .nonmember-note { font-size: 12px; line-height: 1.45; color: ${PALETTE.mute}; font-style: italic; }
+        .mem-fas { font-size: 12px; line-height: 1.45; color: ${PALETTE.mute}; margin-top: 8px;
+          padding-top: 8px; border-top: 1px dashed ${PALETTE.line}; }
+        .mem-fas-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .05em;
+          text-transform: uppercase; color: ${PALETTE.field}; }
+        .survey-band { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .08em;
+          text-transform: uppercase; color: ${PALETTE.wheat}; margin: 16px 0 4px; padding-top: 12px;
+          border-top: 1px dashed ${PALETTE.line}; }
+        .conv-summary { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: ${PALETTE.field};
+          background: ${PALETTE.wheatSoft}; border: 1px solid ${PALETTE.line}; border-radius: 8px;
+          padding: 10px 12px; margin-bottom: 16px; line-height: 1.5; }
+        .cluster { border: 1px solid ${PALETTE.line}; border-radius: 10px; padding: 12px 14px;
+          margin-bottom: 10px; background: ${PALETTE.paper}; }
+        .cluster-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .cluster-label { font-family: 'Archivo', sans-serif; font-weight: 700; font-size: 15px; color: ${PALETTE.ink}; }
+        .cluster-count { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 600;
+          color: ${PALETTE.field}; white-space: nowrap; }
+        .cluster-den { font-size: 11px; color: ${PALETTE.mute}; }
+        .cluster-meta { font-size: 12px; color: ${PALETTE.mute}; margin: 4px 0 8px; }
+        .cluster-badge { display: inline-block; margin-left: 8px; font-family: 'IBM Plex Mono', monospace;
+          font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: ${PALETTE.pass};
+          border: 1px solid ${PALETTE.pass}; border-radius: 4px; padding: 1px 6px; }
+        .cluster-members { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+        .cluster-issues { font-size: 12.5px; line-height: 1.5; color: ${PALETTE.ink}; }
+        .cluster.concluded { opacity: 0.72; }
+        .std-when { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: ${PALETTE.mute}; white-space: nowrap; text-align: right; }
+        .std-items { font-size: 12.5px; line-height: 1.5; color: ${PALETTE.ink}; margin: 6px 0 8px; }
+        .std-line { font-size: 12.5px; line-height: 1.5; color: ${PALETTE.ink}; margin: 4px 0; }
+        .std-tag { font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+          color: ${PALETTE.field}; background: ${PALETTE.wheatSoft}; border-radius: 3px; padding: 1px 5px; margin-right: 6px; }
+        .feed-item { border: 1px solid ${PALETTE.line}; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: ${PALETTE.paper}; }
+        .feed-title { font-family: 'Archivo', sans-serif; font-weight: 700; font-size: 14.5px; color: ${PALETTE.ink}; line-height: 1.35; }
+        .feed-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: ${PALETTE.mute}; }
+        .feed-country { font-weight: 600; color: ${PALETTE.field}; }
+        .feed-sectors { font-style: italic; }
+        .feed-link { display: inline-block; font-size: 12.5px; color: ${PALETTE.field}; margin-bottom: 8px; }
+        .feed-actions { display: flex; gap: 8px; }
+        .rep-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; }
+        .rep-name { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600;
+          color: ${PALETTE.field}; width: 72px; flex-shrink: 0; }
+        .rep-bar-wrap { flex: 1; height: 8px; background: ${PALETTE.wheatSoft}; border-radius: 4px; overflow: hidden; }
+        .rep-bar { display: block; height: 100%; background: ${PALETTE.wheat}; border-radius: 4px; }
+        .rep-n { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: ${PALETTE.mute};
+          width: 20px; text-align: right; }
+        .inp { width: 100%; font-family: 'Archivo', sans-serif; font-size: 14px; color: ${PALETTE.ink};
+          background: ${PALETTE.paper}; border: 1px solid ${PALETTE.line}; border-radius: 8px; padding: 10px 12px; }
+        .inp:focus { outline: 2px solid ${PALETTE.wheat}; outline-offset: 1px; border-color: ${PALETTE.wheat}; }
+        .ta { resize: vertical; line-height: 1.45; }
+        .chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+        .chip { font-family: 'Archivo', sans-serif; font-size: 12px; font-weight: 600; padding: 6px 10px;
+          border-radius: 99px; border: 1px solid ${PALETTE.line}; background: ${PALETTE.paper};
+          color: ${PALETTE.mute}; cursor: pointer; }
+        .chip-on { background: ${PALETTE.field}; color: #fff; border-color: ${PALETTE.field}; }
+        .gate { padding: 12px 0; border-top: 1px dashed ${PALETTE.line}; }
+        .gate-q { font-size: 13px; line-height: 1.45; margin-bottom: 8px; }
+        .gate-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+        .gate-btn { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600;
+          letter-spacing: .06em; text-transform: uppercase; padding: 7px 12px; border-radius: 6px;
+          border: 1.5px solid ${PALETTE.line}; background: transparent; color: ${PALETTE.mute}; cursor: pointer; }
+        .gate-on { background: transparent; }
+        .num-btn { font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600;
+          width: 40px; height: 36px; border-radius: 6px; border: 1.5px solid ${PALETTE.line};
+          background: transparent; color: ${PALETTE.mute}; cursor: pointer; }
+        .num-on { border-color: ${PALETTE.wheat}; color: ${PALETTE.ink}; background: ${PALETTE.wheatSoft}; }
+        .stamp { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-weight: 600;
+          letter-spacing: .12em; border: 2px solid; border-radius: 4px; padding: 3px 8px;
+          transform: rotate(-2deg); white-space: nowrap; }
+        .big-stamp { font-size: 11px; }
+        .axis { padding: 10px 0; border-top: 1px dashed ${PALETTE.line}; }
+        .axis-l { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+        .axis-hint { font-weight: 400; color: ${PALETTE.mute}; }
+        .score-total { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: ${PALETTE.field}; }
+        .score-den { font-size: 12px; color: ${PALETTE.mute}; }
+        .link-del { background: none; border: none; color: ${PALETTE.fail}; font-size: 12px;
+          font-family: 'IBM Plex Mono', monospace; cursor: pointer; padding: 0; }
+        .empty { color: ${PALETTE.mute}; font-size: 14px; padding: 18px; border: 1px dashed ${PALETTE.line};
+          border-radius: 10px; text-align: center; }
+        .member-hint { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: ${PALETTE.field};
+          margin-top: 8px; line-height: 1.5; }
+        .breadth-none { font-size: 12px; color: ${PALETTE.mute}; font-style: italic; padding: 4px 0; line-height: 1.45; }
+        .breadth-read { display: flex; align-items: baseline; gap: 12px; padding: 2px 0; flex-wrap: wrap; }
+        .breadth-score { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: ${PALETTE.field}; }
+        .breadth-detail { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: ${PALETTE.mute}; }
+        .mem-short { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: ${PALETTE.wheat}; white-space: nowrap; }
+        .mem-sectors { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .mem-tag { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+          background: ${PALETTE.wheatSoft}; color: ${PALETTE.unsure}; border-radius: 4px; padding: 3px 7px; }
+        .mem-interests { font-size: 13px; line-height: 1.5; color: ${PALETTE.ink}; }
+        .thread { font-size: 13px; line-height: 1.5; padding: 8px 0; border-top: 1px dashed ${PALETTE.line}; }
+        .thread:first-of-type { border-top: none; padding-top: 0; }
+        @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
+      `}</style>
+      {viewMap[view]}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<FAEAWorkspace />);
+</script>
+</body>
+</html>
